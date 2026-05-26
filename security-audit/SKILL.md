@@ -3,7 +3,7 @@ name: security-audit
 description: Run a CSWG-aligned security audit on the current codebase
 disable-model-invocation: true
 user-invocable: true
-argument-hint: "[pr <number>] [output-directory]"
+argument-hint: "[<pr-number> | <github-pr-url>] [output-directory]"
 ---
 
 # CSWG-Aligned Security Audit
@@ -20,7 +20,8 @@ Parse `$ARGUMENTS` to determine the audit mode before doing anything else:
 | Invocation | Mode | Output filename |
 |---|---|---|
 | `/security-audit` | Full local repo audit (current branch) | `YYYY-MM-DD-<project>-<branch>-SECURITY-AUDIT.md` |
-| `/security-audit pr <number>` | PR audit | `YYYY-MM-DD-<project>-PR-<number>-SECURITY-AUDIT.md` |
+| `/security-audit 123` | PR audit — bare PR number | `YYYY-MM-DD-<project>-PR-123-SECURITY-AUDIT.md` |
+| `/security-audit https://github.com/…/pull/123` | PR audit — GitHub PR URL | `YYYY-MM-DD-<project>-PR-123-SECURITY-AUDIT.md` |
 | Either mode accepts an optional trailing output directory path. If omitted, write to the current working directory. |
 
 ---
@@ -41,7 +42,9 @@ not already available in the conversation context.
 
 ### Mode B — PR Audit
 
-Triggered when `$ARGUMENTS` begins with `pr <number>`.
+Triggered when `$ARGUMENTS` is a bare integer (e.g. `230`) or a GitHub PR URL
+(e.g. `https://github.com/<org>/<repo>/pull/230`). Extract the PR number from
+whichever form is provided and use it for all subsequent `gh pr` calls.
 
 **Step 1 — Gather PR context:**
 ```
@@ -377,6 +380,7 @@ as follows:
 
 | Version | Date       | Changes |
 |---------|------------|---------|
+| 1.3     | 2026-05-26 | PR mode argument syntax updated: bare PR number (`123`) and GitHub PR URL (`https://github.com/.../pull/123`) now accepted directly — the `pr` prefix is no longer required. |
 | 1.2     | 2026-05-26 | Added two invocation modes: Mode A (full local repo audit, default) and Mode B (PR audit via `pr <number>`). PR mode fetches PR metadata and diff via `gh pr`, reads changed files in full, scopes findings to the PR with clearly labelled extended-scope context findings, and adds a Scope Statement below the header. Header block now includes Audit Mode and Audit Scope fields. Completeness check updated for PR mode. |
 | 1.1     | 2026-05-26 | Updated OWASP ASVS reference to v5.0.0 (released May 2025, major version). Added OWASP API Security Top 10 2023 to frameworks and coverage across Areas 3, 5, 11, 12 (API3/BOPLA, API4/resource exhaustion, API7/SSRF, API9/shadow APIs, API10/unsafe API consumption). Added SSRF, XXE/CWE-611, TOCTOU/CWE-362 to Area 3. Expanded OAuth 2.0/OIDC attack vectors in Area 1. Added IaC and container security to Area 9. Added supply chain security (SLSA, SBOM, CI/CD pinning, dependency confusion) to Area 12. Named specific secret scanning tools (trufflehog, gitleaks) in Area 4. Named SAST and container/SCA tools (semgrep, trivy, snyk, etc.) in Area 5. Added CVSS base score and Status fields to finding format. Added Low-volume grading modifier (-1 if 10+ Lows). Added Retest Guidance to Remediation Plan section. Added STRIDE per-element methodology to Threat Model section. Added conditional LLM/AI coverage (OWASP LLM Top 10 2025) to Area 12. Fixed git remote contradiction in header template. Added Report Version field and full Low count to Management Summary. Added NCSC CAF objective mapping appendix. Added OWASP LLM Top 10 2025 to Frameworks Referenced. |
 | 1.0     | (original) | Initial release — 12 CSWG review areas, severity definitions, grading rubric, finding format, output structure, completeness checklist. |
