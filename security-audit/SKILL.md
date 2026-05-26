@@ -87,10 +87,17 @@ assesses — aligned to recognised security standards and frameworks.
 ### 1. Authentication & Access Control
 - AuthN/AuthZ mechanisms, session management, privilege escalation
 - Credential storage, password hashing, MFA implementation
-- Token lifecycle (issuance, validation, revocation, expiry)
+- Token lifecycle (issuance, validation, revocation, expiry); JWT-specific:
+  verify alg:none rejection, algorithm confusion resistance (RS256/HS256
+  key-confusion attack, CWE-327), and that jku/kid header values are validated
+  against a fixed allowlist and not resolved as attacker-controlled URLs (CWE-347)
 - OAuth 2.0 / OIDC: redirect_uri validation, PKCE enforcement on public clients,
   implicit flow deprecation, authorization code interception, token leakage via
   Referer headers or logs
+- CSRF (Cross-Site Request Forgery, CWE-352, OWASP A01:2025) — verify CSRF
+  tokens or SameSite=Strict/Lax cookie attributes on all state-changing
+  requests; check HTML forms, API mutation endpoints, and single-page app
+  fetch calls for absent anti-CSRF controls
 
 ### 2. Data Protection & Privacy
 - Encryption at rest and in transit, PII handling, data classification
@@ -101,15 +108,33 @@ assesses — aligned to recognised security standards and frameworks.
 - SQL, XSS, command, LDAP, template injection vectors
 - Input sanitisation, parameterised queries, output encoding
 - Content-Type validation, file upload restrictions
-- SSRF (Server-Side Request Forgery, OWASP A10:2021 / API7:2023) — unvalidated
+- SSRF (Server-Side Request Forgery, CWE-918 / API7:2023) — unvalidated
   URLs passed to internal HTTP clients; check for access to private IP ranges
-  and cloud metadata endpoints (169.254.169.254, fd00:ec2::254)
+  and cloud metadata endpoints (169.254.169.254, fd00:ec2::254).
+  [Note: SSRF was A10:2021; it has no standalone position in OWASP Top 10 2025
+  and is commonly classified under A01:2025 Broken Access Control]
 - XXE (XML External Entity injection, CWE-611) — verify external entity
   resolution is disabled in XML parsers (libxml2, .NET XmlDocument,
   Java DocumentBuilder)
 - TOCTOU race conditions (CWE-362) — time-of-check/time-of-use flaws in
   concurrent or async code affecting file access, authentication state, or
   shared resources
+- Path traversal (CWE-22) — file path inputs not canonicalised before use;
+  check for `../` sequences in upload destinations, download handlers,
+  template loaders, log file paths, and static file servers
+- Open redirect (CWE-601) — `redirect`, `next`, `return_to`, and `url`
+  parameters passed to HTTP 302 responses without allowlist validation;
+  enabler for OAuth redirect_uri phishing
+- Insecure deserialization (CWE-502, OWASP A08:2025) — untrusted serialised
+  objects processed without integrity validation; Java ObjectInputStream,
+  Python pickle, PHP unserialize, and .NET BinaryFormatter are high-risk
+  when fed attacker-controlled input; can lead to RCE
+- If the codebase is written in C, C++, or another memory-unsafe language:
+  assess for memory safety vulnerabilities — out-of-bounds writes (CWE-787,
+  CWE Top 25 #2, 18 KEV CVEs), out-of-bounds reads (CWE-125), use-after-free
+  (CWE-416), buffer overflows (CWE-119), and integer overflows feeding size
+  calculations (CWE-190). Findings in this class with remote exploitability
+  are treated as Critical.
 
 ### 4. Secrets Management
 - Hardcoded credentials, API keys, tokens in source code
@@ -121,6 +146,9 @@ assesses — aligned to recognised security standards and frameworks.
 - Vault/secrets manager usage
 
 ### 5. Dependency & Supply Chain Security
+> Note: Supply chain security is now OWASP A03:2025 (#3). Treat dependency CVE
+> findings and build integrity failures at the same priority as injection and
+> access control findings.
 - Known CVEs — run `npm audit`, `dotnet list package --vulnerable`,
   `pip audit`, or equivalent for the project's ecosystem
 - Dependency pinning, integrity verification (lock file hashes)
@@ -141,13 +169,22 @@ assesses — aligned to recognised security standards and frameworks.
 - PII in logs, log integrity, tamper resistance
 - SIEM readiness, alerting on security-relevant events
 
-### 8. Error Handling & Information Disclosure
+### 8. Error Handling & Information Disclosure (OWASP A10:2025)
+- Failing open (CWE-636, OWASP A10:2025) — exceptions in authentication or
+  authorisation gates that result in access being granted rather than denied;
+  trace try/catch blocks around auth checks to verify deny-by-default on error
+- Sensitive data in error messages (CWE-209) — stack traces, DB schemas,
+  internal hostnames, or credential fragments in API error responses
 - Stack traces in production, debug modes exposed
 - Verbose error messages leaking internals to users
 - Exception handling that reveals system architecture
 
 ### 9. Security Configuration & Hardening
-- Default credentials, CORS policy, CSP and security headers
+- Default credentials, CORS policy
+- Security response headers: HSTS (Strict-Transport-Security, subdomains +
+  preload), CSP (Content-Security-Policy), X-Frame-Options or CSP
+  frame-ancestors, X-Content-Type-Options: nosniff, Referrer-Policy,
+  Permissions-Policy, and COEP/CORP for cross-origin isolation
 - Unnecessary services, open ports, debug endpoints
 - Environment-specific security settings (dev vs prod)
 - IaC / Container security:
@@ -173,7 +210,9 @@ assesses — aligned to recognised security standards and frameworks.
 - Key management lifecycle
 
 ### 11. Business Logic & Authorisation
-- IDOR vulnerabilities, mass assignment
+- IDOR (Insecure Direct Object References, CWE-639, OWASP A01:2025) —
+  object identifiers in requests not validated against the calling user's
+  entitlements; mass assignment (unexposed fields set via bulk-update endpoints)
 - Broken Object Property Level Authorization (OWASP API3:2023) — responses
   returning more fields than the caller is entitled to see
 - Rate limiting, abuse prevention; unrestricted resource consumption /
@@ -197,7 +236,7 @@ assesses — aligned to recognised security standards and frameworks.
   - Software Bill of Materials (SBOM) presence and completeness (SPDX or
     CycloneDX format)
 - If the codebase integrates LLM/AI features: assess against OWASP LLM
-  Top 10 2025 — prompt injection (LLM01), insecure output handling (LLM02),
+  Top 10 v2.0 (2025) — prompt injection (LLM01), insecure output handling (LLM02),
   excessive agency (LLM08)
 
 ## Severity Definitions
@@ -238,7 +277,9 @@ Final score is clamped to 1-10.
 ### [Short Title]
 **Severity**: Critical / High / Medium / Low
 **CWE**: CWE-XXX (name) | **OWASP**: A0X:YYYY (category)
-**CVSS**: <base score> (AV:_/AC:_/PR:_/UI:_/S:_/C:_/I:_/A:_)  [required for Critical/High; omit for Medium/Low]
+**CVSS**: <base score> (CVSS:3.1/AV:_/AC:_/PR:_/UI:_/S:_/C:_/I:_/A:_)  [required for Critical/High; omit for Medium/Low]
+         (CVSS v4.0 may be used where the organisation standard requires it —
+         format: CVSS:4.0/AV:_/AC:_/AT:_/PR:_/UI:_/VC:_/VI:_/VA:_/SC:_/SI:_/SA:_)
 **Location**: file:line
 **What happens**: [Actual runtime behaviour — traced, not speculated]
 **Exploit scenario**: [attacker action -> precondition -> observable impact]
@@ -264,8 +305,8 @@ Audit Mode          : Full Repo / PR #<number> — <PR title>
 Audit Scope         : <Full codebase on <branch> / PR #N: <N files changed, +X −Y lines>>
 Overall Security Grading: <X/10 — derived from findings>
 CSWG Ready          : <Ready / Ready with caveats / Not ready — one-line justification>
-Frameworks Referenced: OWASP ASVS v5.0.0, OWASP Top 10 2021, OWASP API Security Top 10 2023,
-                       CWE Top 25, NCSC CAF, NIST CSF, ISO 27001 Annex A, OWASP LLM Top 10 2025,
+Frameworks Referenced: OWASP ASVS v5.0.0, OWASP Top 10 2025, OWASP API Security Top 10 2023,
+                       CWE Top 25 2025, NCSC CAF, NIST CSF, ISO 27001 Annex A, OWASP LLM Top 10 v2.0 (2025),
                        OWASP MASVS v2.0, OWASP Mobile Top 10 2024 (if mobile)
 ```
 
@@ -393,6 +434,7 @@ as follows:
 
 | Version | Date       | Changes |
 |---------|------------|---------|
+| 1.5     | 2026-05-26 | Updated to OWASP Top 10 2025 (replaced all 2021 references); fixed SSRF OWASP citation (A10:2021 retired — no standalone 2025 category, note added); added CSRF (CWE-352, A01:2025) to Area 1; added A10:2025 Mishandling of Exceptional Conditions with CWE-636 Failing Open and CWE-209 to Area 8; added Path Traversal (CWE-22), Insecure Deserialization (CWE-502, A08:2025), Open Redirect (CWE-601), and conditional memory safety block (CWE-787/CWE-125/CWE-416/CWE-190 for memory-unsafe languages) to Area 3; extended JWT token lifecycle bullet (alg:none, RS256/HS256 key-confusion, jku/kid injection) in Area 1; specified CVSS:3.1 vector format with v4.0 note in Finding Format; updated CWE Top 25 → CWE Top 25 2025 in Frameworks Referenced; added CWE-639 to IDOR bullet in Area 11; enumerated HTTP security headers explicitly in Area 9; added supply chain elevation note (A03:2025 is #3) to Area 5; updated OWASP LLM Top 10 to v2.0 (2025) in Area 12 and Frameworks Referenced. |
 | 1.4     | 2026-05-26 | Removed disable-model-invocation frontmatter flag (prose guard is sufficient; flag had ambiguous harness semantics). Made CVSS base score required for Critical/High findings, explicitly omitted for Medium/Low. Added re-audit regression modifier (-1 if zero prior findings remediated). Added conditional OWASP MASVS v2.0 / Mobile Top 10 2024 coverage to Area 9 for Android/iOS projects. Added OWASP MASVS v2.0 and Mobile Top 10 2024 (if mobile) to Frameworks Referenced header template. Updated Completeness Check with CVSS and mobile coverage checklist items. Updated grading rubric note to reference all three modifiers. |
 | 1.3     | 2026-05-26 | PR mode argument syntax updated: bare PR number (`123`) and GitHub PR URL (`https://github.com/.../pull/123`) now accepted directly — the `pr` prefix is no longer required. |
 | 1.2     | 2026-05-26 | Added two invocation modes: Mode A (full local repo audit, default) and Mode B (PR audit via `pr <number>`). PR mode fetches PR metadata and diff via `gh pr`, reads changed files in full, scopes findings to the PR with clearly labelled extended-scope context findings, and adds a Scope Statement below the header. Header block now includes Audit Mode and Audit Scope fields. Completeness check updated for PR mode. |
