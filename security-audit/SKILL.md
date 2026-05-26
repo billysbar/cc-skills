@@ -58,9 +58,14 @@ understanding auth flows, or detecting secrets.
 
 **Step 3 — Determine audit scope:**
 - Primary scope: all code introduced or modified by the PR.
-- Extended scope: any function, module, or config that the PR's new code directly
-  calls or depends on, if it contains a security-relevant pattern. Clearly label
-  extended-scope findings as `[context — not introduced by this PR]`.
+- Extended scope: packages that are newly added by this PR, or whose version this
+  PR explicitly changed (e.g. a semver bump in `package.json`, `requirements.txt`,
+  `go.mod`). Run the ecosystem's audit tool (`npm audit`, `pip audit`, etc.) and
+  surface CVEs only for those packages. Clearly label these findings as
+  `[context — not introduced by this PR]`.
+- Out of scope: pre-existing dependencies not touched by this PR, existing source
+  files not modified by this PR, and general baseline codebase issues. These belong
+  in a full-repo audit (Mode A), not a PR audit.
 
 **Audit scope note in report**: Include a one-paragraph scope statement below
 the header block explaining what the PR changes and what was examined.
