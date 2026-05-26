@@ -1,7 +1,6 @@
 ---
 name: security-audit
 description: Run a CSWG-aligned security audit on the current codebase
-disable-model-invocation: true
 user-invocable: true
 argument-hint: "[<pr-number> | <github-pr-url>] [output-directory]"
 ---
@@ -158,6 +157,14 @@ assesses — aligned to recognised security standards and frameworks.
     standards, exposed LoadBalancer services
   - Terraform/CloudFormation: over-permissive IAM policies, public S3 buckets,
     unencrypted storage, open security groups (0.0.0.0/0)
+- If the codebase targets Android or iOS: assess against OWASP MASVS v2.0 and
+  OWASP Mobile Top 10 2024 — insecure data storage (M2: SharedPreferences,
+  SQLite, external storage); improper platform usage (M1: exported components,
+  deep links, pending intents, URL schemes); insufficient binary protections
+  (M9: obfuscation, certificate pinning where risk warrants it, root/jailbreak
+  detection for high-risk apps); WebView misconfigurations (M7:
+  addJavascriptInterface, file:// access, mixed content); exported component
+  attack surface (AndroidManifest android:exported, intent filters).
 
 ### 10. Cryptography
 - Algorithm strength and key lengths
@@ -220,6 +227,8 @@ Modifiers (each applies independently, cumulative):
 - -1 if findings cluster in Authentication, Secrets, or Cryptography
   (high CSWG scrutiny areas)
 - -1 if 10+ Low findings (indicates systemic hardening debt)
+- -1 if this is a re-audit and zero findings from the previous audit have been
+  remediated (indicates stalled remediation posture)
 
 Final score is clamped to 1-10.
 
@@ -229,7 +238,7 @@ Final score is clamped to 1-10.
 ### [Short Title]
 **Severity**: Critical / High / Medium / Low
 **CWE**: CWE-XXX (name) | **OWASP**: A0X:YYYY (category)
-**CVSS**: <base score> (AV:_/AC:_/PR:_/UI:_/S:_/C:_/I:_/A:_)  [optional]
+**CVSS**: <base score> (AV:_/AC:_/PR:_/UI:_/S:_/C:_/I:_/A:_)  [required for Critical/High; omit for Medium/Low]
 **Location**: file:line
 **What happens**: [Actual runtime behaviour — traced, not speculated]
 **Exploit scenario**: [attacker action -> precondition -> observable impact]
@@ -256,7 +265,8 @@ Audit Scope         : <Full codebase on <branch> / PR #N: <N files changed, +X �
 Overall Security Grading: <X/10 — derived from findings>
 CSWG Ready          : <Ready / Ready with caveats / Not ready — one-line justification>
 Frameworks Referenced: OWASP ASVS v5.0.0, OWASP Top 10 2021, OWASP API Security Top 10 2023,
-                       CWE Top 25, NCSC CAF, NIST CSF, ISO 27001 Annex A, OWASP LLM Top 10 2025
+                       CWE Top 25, NCSC CAF, NIST CSF, ISO 27001 Annex A, OWASP LLM Top 10 2025,
+                       OWASP MASVS v2.0, OWASP Mobile Top 10 2024 (if mobile)
 ```
 
 Source values from repo metadata. Write "Unknown" if undetermined.
@@ -344,8 +354,11 @@ Before finalising the report, verify:
 - [ ] Every review area (1-12) is addressed — findings, "no issues found",
   or (PR mode) "not touched by this PR"
 - [ ] All Critical/High findings include an exploit scenario
-- [ ] Overall Security Grading matches the Grading Rubric criteria (both
-  modifiers checked)
+- [ ] All Critical/High findings include a CVSS base score and vector
+- [ ] Overall Security Grading matches the Grading Rubric criteria (all
+  three modifiers checked, including re-audit regression where applicable)
+- [ ] If Android/iOS project: OWASP MASVS / Mobile Top 10 coverage noted in
+  Area 9 findings or explicitly dismissed as N/A
 - [ ] CSWG Ready assessment is consistent with the grading
 - [ ] CSWG Readiness Assessment table is complete (all 12 areas)
 - [ ] Threat model diagram included with STRIDE per-element analysis
@@ -380,6 +393,7 @@ as follows:
 
 | Version | Date       | Changes |
 |---------|------------|---------|
+| 1.4     | 2026-05-26 | Removed disable-model-invocation frontmatter flag (prose guard is sufficient; flag had ambiguous harness semantics). Made CVSS base score required for Critical/High findings, explicitly omitted for Medium/Low. Added re-audit regression modifier (-1 if zero prior findings remediated). Added conditional OWASP MASVS v2.0 / Mobile Top 10 2024 coverage to Area 9 for Android/iOS projects. Added OWASP MASVS v2.0 and Mobile Top 10 2024 (if mobile) to Frameworks Referenced header template. Updated Completeness Check with CVSS and mobile coverage checklist items. Updated grading rubric note to reference all three modifiers. |
 | 1.3     | 2026-05-26 | PR mode argument syntax updated: bare PR number (`123`) and GitHub PR URL (`https://github.com/.../pull/123`) now accepted directly — the `pr` prefix is no longer required. |
 | 1.2     | 2026-05-26 | Added two invocation modes: Mode A (full local repo audit, default) and Mode B (PR audit via `pr <number>`). PR mode fetches PR metadata and diff via `gh pr`, reads changed files in full, scopes findings to the PR with clearly labelled extended-scope context findings, and adds a Scope Statement below the header. Header block now includes Audit Mode and Audit Scope fields. Completeness check updated for PR mode. |
 | 1.1     | 2026-05-26 | Updated OWASP ASVS reference to v5.0.0 (released May 2025, major version). Added OWASP API Security Top 10 2023 to frameworks and coverage across Areas 3, 5, 11, 12 (API3/BOPLA, API4/resource exhaustion, API7/SSRF, API9/shadow APIs, API10/unsafe API consumption). Added SSRF, XXE/CWE-611, TOCTOU/CWE-362 to Area 3. Expanded OAuth 2.0/OIDC attack vectors in Area 1. Added IaC and container security to Area 9. Added supply chain security (SLSA, SBOM, CI/CD pinning, dependency confusion) to Area 12. Named specific secret scanning tools (trufflehog, gitleaks) in Area 4. Named SAST and container/SCA tools (semgrep, trivy, snyk, etc.) in Area 5. Added CVSS base score and Status fields to finding format. Added Low-volume grading modifier (-1 if 10+ Lows). Added Retest Guidance to Remediation Plan section. Added STRIDE per-element methodology to Threat Model section. Added conditional LLM/AI coverage (OWASP LLM Top 10 2025) to Area 12. Fixed git remote contradiction in header template. Added Report Version field and full Low count to Management Summary. Added NCSC CAF objective mapping appendix. Added OWASP LLM Top 10 2025 to Frameworks Referenced. |
