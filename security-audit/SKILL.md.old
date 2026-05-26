@@ -1,0 +1,238 @@
+---
+name: security-audit
+description: Run a CSWG-aligned security audit on the current codebase
+disable-model-invocation: true
+user-invocable: true
+argument-hint: "[output-directory]"
+---
+
+# CSWG-Aligned Security Audit
+
+> **IMPORTANT — PLAN AND REPORT ONLY.**
+> This skill produces an audit report and remediation plan. It does **not** make
+> any code changes. Do not edit, create, or delete any source files. All findings
+> and recommendations are written to the output report exclusively.
+
+**Output directory**: $ARGUMENTS (if empty, use the current working directory)
+
+Derive repository metadata from the conversation context (working directory name, git status, recent commits) and today's date. Do NOT run git remote commands. Only use local git commands (e.g. `git rev-parse HEAD`) if the full commit SHA is not already available in the conversation context. Use this metadata to populate the header block and derive the output filename.
+
+**Output filename**: `YYYY-MM-DD-<project-name>-<branch>-SECURITY-AUDIT.md`
+
+---
+
+Perform a deep security-focused audit of the entire codebase. Assume production code.
+Skip generated files, vendored dependencies, lock files, and build artifacts.
+
+This audit is structured around what a Cyber Security Working Group (CSWG) actually assesses — aligned to recognised security standards and frameworks.
+
+## Ground Rules
+
+- Map the platform, framework, concurrency model, entry points, and
+  execution flow before starting.
+- Trace execution paths before asserting behaviour. State what DOES happen,
+  not what "could" or "might" happen.
+- Critical/High findings must include a concrete exploit scenario with
+  attacker action, precondition, and observable impact. If you cannot
+  describe one, lower the severity.
+- Identify root causes, not symptoms.
+- Analyse cross-file interactions — do not review files in isolation.
+
+## The 12 CSWG Review Areas
+
+### 1. Authentication & Access Control
+- AuthN/AuthZ mechanisms, session management, privilege escalation
+- Credential storage, password hashing, MFA implementation
+- Token lifecycle (issuance, validation, revocation, expiry)
+
+### 2. Data Protection & Privacy
+- Encryption at rest and in transit, PII handling, data classification
+- Retention and disposal policies, GDPR/CCPA compliance
+- Data minimisation, consent tracking, right to deletion
+
+### 3. Input Validation & Injection Prevention
+- SQL, XSS, command, LDAP, template injection vectors
+- Input sanitisation, parameterised queries, output encoding
+- Content-Type validation, file upload restrictions
+
+### 4. Secrets Management
+- Hardcoded credentials, API keys, tokens in source code
+- `.gitignore` audit — flag sensitive files not excluded (`.env`, creds,
+  keystores, private keys)
+- Git history scan for committed secrets, secret rotation practices
+- Vault/secrets manager usage
+
+### 5. Dependency & Supply Chain Security
+- Known CVEs — run `npm audit`, `dotnet list package --vulnerable`,
+  `pip audit`, or equivalent for the project's ecosystem
+- Dependency pinning, integrity verification (lock file hashes)
+- Vendored code audit, SCA coverage
+
+### 6. Secure Communications
+- TLS configuration, certificate validation, protocol versions
+- Certificate pinning, API transport security
+- Internal service-to-service communication security
+
+### 7. Logging, Monitoring & Audit Trail
+- Security event logging (auth attempts, privilege changes, data access)
+- PII in logs, log integrity, tamper resistance
+- SIEM readiness, alerting on security-relevant events
+
+### 8. Error Handling & Information Disclosure
+- Stack traces in production, debug modes exposed
+- Verbose error messages leaking internals to users
+- Exception handling that reveals system architecture
+
+### 9. Security Configuration & Hardening
+- Default credentials, CORS policy, CSP and security headers
+- Unnecessary services, open ports, debug endpoints
+- Environment-specific security settings (dev vs prod)
+
+### 10. Cryptography
+- Algorithm strength and key lengths
+- Deprecated algorithms (MD5, SHA1, DES, RC4)
+- RNG quality (use of cryptographically secure sources)
+- Key management lifecycle
+
+### 11. Business Logic & Authorisation
+- IDOR vulnerabilities, mass assignment
+- Rate limiting, abuse prevention
+- Privilege boundary enforcement, transaction integrity
+- Workflow bypass, state manipulation
+
+### 12. Secure SDLC & Compliance Posture
+- SAST/DAST integration in CI/CD pipeline
+- Security testing evidence, code review practices
+- Regulatory alignment, code signing, deployment security
+- Branch protection, merge requirements
+
+## Severity Definitions
+
+- **Critical**: Actively exploitable. Data breach, auth bypass, RCE.
+  Concrete exploit scenario required.
+- **High**: Exploitable under realistic conditions. Requires concrete example.
+- **Medium**: Security weakness, not immediately exploitable.
+  Defence-in-depth gap.
+- **Low**: Hardening recommendation. Best practice deviation.
+
+If using "could", "might", or "potentially" — that is Medium or below.
+
+## Grading Rubric
+
+Derive the Overall Security Grading score from finding counts:
+
+| Score | Criteria |
+|-------|----------|
+| 9-10  | No Critical/High. <= 2 Medium. CSWG ready. |
+| 7-8   | No Critical. <= 1 High, <= 4 Medium. CSWG ready with minor remediation. |
+| 5-6   | No Critical. 2+ High or 5+ Medium. Needs remediation before CSWG. |
+| 3-4   | 1+ Critical or 4+ High. Significant security risk. Not CSWG ready. |
+| 1-2   | Multiple Critical. Fundamental security failures. Not CSWG ready. |
+
+Modifier: -1 if findings cluster in Authentication, Secrets, or Cryptography
+(high CSWG scrutiny areas).
+Final score is clamped to 1-10.
+
+## Finding Format
+
+```
+### [Short Title]
+**Severity**: Critical / High / Medium / Low
+**CWE**: CWE-XXX (name) | **OWASP**: A0X:YYYY (category)
+**Location**: file:line
+**What happens**: [Actual runtime behaviour — traced, not speculated]
+**Exploit scenario**: [attacker action -> precondition -> observable impact]
+  (required for Critical/High; optional for Medium/Low)
+**Root cause**: [Underlying reason, if different from symptom]
+**Recommendation**: [Specific fix or mitigation]
+```
+
+## Output Structure
+
+1. **Header** — metadata block in this exact format:
+
+```
+Repository Name     : <from git remote or folder name>
+Branch Name / Commit: <current branch> (<full commit SHA>)
+Project             : <from README or package manifest>
+Technology Stack    : <primary language, framework, version>
+Analysis Date       : <YYYY-MM-DD>
+Reviewer            : <from git config user.name or conversation context>
+Overall Security Grading: <X/10 — derived from findings>
+CSWG Ready          : <Ready / Ready with caveats / Not ready — one-line justification>
+Frameworks Referenced: OWASP ASVS v4.0, OWASP Top 10 2021, CWE Top 25, NCSC CAF, NIST CSF, ISO 27001 Annex A
+```
+
+Source values from repo metadata. Write "Unknown" if undetermined.
+
+2. **Management Summary** — self-contained section for non-technical stakeholders:
+   - Finding count table (Critical / High / Medium — exclude Low from this table)
+   - 2-3 sentences on overall security posture in plain language
+   - Top 5 risks ranked by business impact — one sentence each, no code
+     references, no line numbers
+   - CSWG readiness verdict: Ready / Ready with caveats / Not ready — with
+     one-line justification
+   - Estimated remediation effort per priority tier:
+     S (hours) / M (days) / L (sprint+)
+   - A manager should be able to read only this section and understand the
+     security state of the codebase
+
+3. **Threat Model Overview** — entry points, trust boundaries, data flows,
+   attack surface. Use a plain-text ASCII box-and-arrow diagram. No Mermaid.
+
+4. **Findings** — grouped by the 12 CSWG review areas, sorted by severity
+   within each group. Every review area must appear — either with findings
+   or an explicit "no issues found" statement.
+
+5. **CSWG Readiness Assessment** — pass/fail table covering each of the
+   12 areas:
+
+```
+| # | Area | Status | Key Finding | Remediation Required |
+```
+
+Status values: PASS / FAIL / PARTIAL — with one-line justification.
+
+6. **Remediation Plan** — prioritised by CSWG impact:
+   - P0: Must fix before CSWG submission (Critical/High)
+   - P1: Should fix, will likely be flagged (Medium with high visibility)
+   - P2: Improve when possible (remaining Medium/Low)
+   - Use JIRA-ready action titles (imperative, concise)
+
+## Quality Calibration
+
+State facts, not speculation:
+
+- NO: "Potential XSS vulnerability"
+  YES: "User input from `req.query.search` at line 42 is rendered via
+  `innerHTML` at line 68 without sanitisation, allowing script injection
+  via the search endpoint"
+
+- NO: "Secrets may be exposed"
+  YES: "AWS access key `AKIA...` committed in `config/aws.js:12`, rotated
+  0 times based on git history, granting S3 read/write to production bucket"
+
+- NO: "Weak cryptography used"
+  YES: "Password hashing in `auth/hash.js:15` uses MD5 with no salt,
+  allowing rainbow table attacks against the user credential store"
+
+## Completeness Check
+
+Before finalising the report, verify:
+
+- [ ] Management Summary is self-contained and jargon-free
+- [ ] Every review area (1-12) is addressed — findings or explicit
+  "no issues found"
+- [ ] All Critical/High findings include an exploit scenario
+- [ ] Overall Security Grading matches the Grading Rubric criteria
+- [ ] CSWG Ready assessment is consistent with the grading
+- [ ] CSWG Readiness Assessment table is complete (all 12 areas)
+- [ ] Threat model diagram included
+- [ ] Header metadata is fully populated (no placeholder values remaining)
+- [ ] Remediation plan covers all Critical/High findings
+
+## Done When
+
+- [ ] `.md` file written to the output directory with the correct filename
+- [ ] No source files were edited, created, or deleted
+- [ ] No remediation steps were applied to the codebase

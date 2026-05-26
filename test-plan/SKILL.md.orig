@@ -1,0 +1,326 @@
+---
+name: test-plan
+description: Generate a structured manual UI/UX test plan from one or more GitHub PRs
+disable-model-invocation: true
+user-invocable: true
+argument-hint: "<PR-URL-or-number> [PR-URL-or-number ...]"
+---
+
+# Manual Test Plan Generator
+
+**Arguments**: $ARGUMENTS
+
+If `$ARGUMENTS` is empty, report an error:
+"Usage: /test-plan <PR-URL-or-number> [PR-URL-or-number ...]
+Examples:
+  /test-plan 372
+  /test-plan https://github.com/Org/repo/pull/228
+  /test-plan https://github.com/Org/repo/pull/372 https://github.com/Org/repo2/pull/228"
+
+---
+
+## Preflight
+
+1. **Check `gh` is available and authenticated**:
+   ```bash
+   gh auth status
+   ```
+   If this fails, report: "gh CLI is not installed or not authenticated. Run `gh auth login` then retry." and stop.
+
+2. **Determine current date** from conversation context (format: YYYY-MM-DD).
+
+3. **Determine output directory**: use the current working directory. If no git repo is present, use `$HOME`.
+
+---
+
+## Argument Parsing
+
+Parse `$ARGUMENTS` as a space-separated list of one or more PR identifiers.
+
+For each identifier, determine its type:
+
+- **Full GitHub URL** — matches `https://github.com/<owner>/<repo>/pull/<number>`
+  - Extract: `owner/repo` (e.g. `Payzone-UK/payzone_app_html5-no-zorin`) and `number` (e.g. `228`)
+  - Short repo name for filename: everything after the last `/` in the repo path (e.g. `payzone_app_html5-no-zorin` → `html5`)
+    - Simplify to a 2-5 character token: drop common prefixes like `payzone_`, `payzone-`, strip `-no-zorin` suffixes. Use the most distinctive part.
+  - Use `--repo <owner>/<repo>` flag in all `gh` commands
+
+- **Numeric string** — treat as a PR number in the **current repository**
+  - Auto-detect current repo: `basename $(git rev-parse --show-toplevel)` — fall back to "current-repo" if not in a git repo
+  - No `--repo` flag needed
+
+If any identifier cannot be parsed as either form, report: "Cannot parse argument '<arg>' — expected a PR number or a GitHub PR URL." and stop.
+
+---
+
+## Data Collection
+
+Collect data for ALL PRs before generating any output.
+
+For each PR:
+
+### 1. Fetch PR metadata
+
+```bash
+# For URL-based (with --repo):
+gh pr view <number> --repo <owner>/<repo> \
+  --json number,title,body,headRefName,baseRefName,labels,url,additions,deletions,files
+
+# For number-only (current repo):
+gh pr view <number> \
+  --json number,title,body,headRefName,baseRefName,labels,url,additions,deletions,files
+```
+
+Capture: number, title, body (PR description), headRefName, baseRefName, labels, url, additions, deletions, files (list of changed filenames).
+
+### 2. Fetch diff
+
+```bash
+# For URL-based:
+gh pr diff <number> --repo <owner>/<repo>
+
+# For number-only:
+gh pr diff <number>
+```
+
+### 3. Classify changed files
+
+From the diff, categorise changed files into:
+- **UI Templates**: `*.html`, `*.erb`, `*.slim`, `*.haml`, `*.hbs`, `*.jinja`, `*.liquid`, `*.mustache`
+- **Components**: `*.vue`, `*.jsx`, `*.tsx`, `*.svelte`, `*.angular.html`
+- **Stylesheets**: `*.css`, `*.scss`, `*.less`, `*.sass`
+- **Client JS/TS**: `*.js`, `*.ts` — exclude `*.test.*`, `*.spec.*`, `*.min.*`
+- **Routes/Config**: files named `routes.rb`, `router.js`, `routes.js`, `*.config.*`, navigation-related files
+- **Backend/Model**: everything else (Ruby models, controllers, Python views, Go handlers, etc.)
+
+For large diffs (50+ files), read the diff content for UI Templates, Components, and Stylesheets in full. For Backend/Model files, read only the file names and any context from the PR description — do not attempt to read every line.
+
+---
+
+## Analysis
+
+Before writing any output, perform this analysis across all collected PR data:
+
+### Change areas
+Group related changes into named areas. Each area = one coherent set of changes affecting the same feature, page, or concern. Examples: "Desktop Layout — Financials Page", "Mobile Layout", "Sass Build Fixes", "Receipt Routing Logic", "Search Filter Hardening".
+
+One area may span multiple files. One file may contribute to multiple areas only if the changes are genuinely distinct.
+
+### Visual/functional impact
+For each area, determine:
+- What the user saw/experienced **before** the change
+- What the user sees/experiences **after** the change
+- Whether the change is visible to end users, or invisible (build fix, internal logic)
+
+### Risk assessment
+Derive an overall Risk Level:
+- **High**: Changes affect transactional flows, auth, data integrity, or navigation
+- **Medium**: Layout changes on primary user-facing pages, new UI states (error, loading, empty), search/filter behaviour
+- **Low**: Cosmetic/spacing fixes, build-only changes, minor copy updates, syntax fixes with no runtime visual change
+
+### Test case derivation
+For each change area, derive 1-3 test cases. Each test case must:
+- Be executable by a non-technical manual tester (no code, no CLI, no dev tools required)
+- Cover the primary happy path AND at least one error/edge case for High-priority areas
+- Describe user actions ("Navigate to...", "Click...", "Enter...", "Resize the browser to portrait orientation")
+- State a specific, observable expected result
+
+---
+
+## Output
+
+### Filename
+`YYYY-MM-DD-<repo-tokens>-TEST-PLAN.md`
+
+- Single PR: `2026-05-08-html5-TEST-PLAN.md`
+- Multiple PRs from different repos: join short tokens with `-`: `2026-05-13-html5-models-TEST-PLAN.md`
+- Multiple PRs from same repo: use repo token once
+
+Write to the current working directory (project root if in a git repo).
+
+---
+
+### Document content
+
+Write the following sections in order:
+
+---
+
+#### SECTION 1 — Document Header
+
+```markdown
+# YYYY-MM-DD — [Repo Short Name(s)] — [PR Title or brief combined description] — Test Plan
+
+**Generated**: YYYY-MM-DD
+**Source PR(s)**: [#228 — repo name](url) · [#372 — repo name](url)
+**Scope**: Manual UI/UX Testing
+**Risk Level**: Low / Medium / High
+```
+
+---
+
+#### SECTION 2 — Executive Summary
+
+One paragraph only. Plain English — no file paths, no variable names, no code references.
+
+Describe what changed from a **user's perspective** and why it matters for testing. Source from: PR description(s) → diff analysis → inferred user impact. If PR description is empty, derive entirely from diff.
+
+> Example: "This test plan covers CSS modernisation changes to the Financials Admin Page, plus Sass syntax fixes required for Node 24 compatibility. The layout has been updated to use flexbox for improved centering and responsive behaviour on both desktop and mobile. Manual testing should confirm visual alignment on both orientations and that the page loads without errors."
+
+---
+
+#### SECTION 3 — Key Changes
+
+One numbered subsection per change area identified in the analysis.
+
+Format for each area:
+
+```markdown
+### N. <Area Name>
+
+**File(s)**: `path/to/file.ext`
+
+| Change | Impact |
+|--------|--------|
+| [What changed — written as a user-understandable description, not code] | **[What the user experiences differently]** |
+| ... | ... |
+
+> **Visual Result:** [One sentence describing the net visual or functional outcome for the user.]
+```
+
+For areas with no visible user impact (e.g., build fixes, syntax corrections):
+- Impact column: "Build no longer fails on X" / "Page now loads successfully with Y"
+- Visual Result: "No visual change to the rendered page, but the application now builds and runs correctly."
+
+For backend/model changes with indirect UI impact:
+- Describe the impact in terms of what the user sees in the UI, not what the server does internally
+- E.g., "Search results no longer return unexpected records when special characters are entered"
+
+---
+
+#### SECTION 4 — Visual Impact Summary
+
+Before/After table. One row per affected page, section, or user-facing feature.
+
+```markdown
+## Visual Impact Summary
+
+| Page / Component | Before | After |
+|-----------------|--------|-------|
+| [Page or section name] | [How it appeared or behaved — be specific] | [How it appears or behaves now — **bold the key improvement**] |
+```
+
+For PRs with no visual changes (backend/logic only), rename this section **Functional Impact Summary** and describe the functional before/after instead.
+
+For multi-PR plans: include rows from all PRs in one unified table, grouped loosely by repo or feature area.
+
+---
+
+#### SECTION 5 — Scope & Risk
+
+```markdown
+## Scope & Risk
+
+| Aspect | Details |
+|--------|---------|
+| **Scope** | [What pages/features are directly affected. What is explicitly NOT affected.] |
+| **Breaking Changes** | None — [describe rationale] / [describe breaking change if any] |
+| **Browser / Device Support** | [Which browsers and devices are relevant to this change] |
+| **Risk Level** | Low / Medium / High — [one sentence justification] |
+| **Testing Required** | [Type of testing: visual regression, functional, regression spot-check, etc.] |
+```
+
+---
+
+#### SECTION 6 — Bottom Line
+
+Three to five bullet points. One per major change area. Plain English. What the tester should know at a glance before sitting down to test.
+
+```markdown
+## Bottom Line
+
+- ✅ **[Area Name]** — [One sentence on what changed and what to verify.]
+- ✅ **[Area Name]** — [One sentence.]
+- ✅ **[Area Name]** — [One sentence.]
+```
+
+---
+
+#### SECTION 7 — Test Cases
+
+```markdown
+## Test Cases
+
+| ID | Area | Priority | Manual Steps | Expected Result | Status |
+|----|------|----------|--------------|-----------------|--------|
+| MT-01 | [Area name] | High | 1. ...<br>2. ...<br>3. ... | [What the tester should observe] | [ ] Pass  [ ] Fail |
+```
+
+**Priority values**: `High` / `Medium` / `Low`
+
+**MT-ID numbering**: sequential from MT-01 across all PRs if multiple sources.
+
+**Writing manual steps**:
+- Number each step
+- Write as user actions only: "Navigate to...", "Click the [button name] button", "Enter [value] in the [field name] field", "Resize the browser window to a narrow (mobile) width"
+- No code, no class names, no variable names, no developer tools
+- Max 5 steps per test case — split into multiple cases if more are needed
+- Happy path cases first, then edge/error cases
+
+**Writing expected results**:
+- Describe what the tester should **see** or **observe**
+- Be specific: "The X-Total title and value should appear centred both horizontally and vertically on screen" is good; "The layout should look correct" is not
+
+**Priority guidance**:
+- **High**: Transactional flows, auth, security-sensitive behaviour, data correctness, navigation — test these first
+- **Medium**: Layout on primary pages, new UI states (error messages, loading indicators, empty states), filter/search behaviour
+- **Low**: Cosmetic fixes, spacing, build-only changes — verify basic page load and visual sanity
+
+---
+
+#### SECTION 8 — Regression Areas (include only if applicable)
+
+Only include this section if the diff touches: shared navigation, authentication, widely-used UI components, shared stylesheets affecting multiple pages, or build tooling that could affect all pages.
+
+```markdown
+## Regression Areas
+
+The following areas were not directly changed but may be affected. Perform a brief spot-check:
+
+- **[Area name]**: [One sentence on why it is at risk and what to check.]
+```
+
+Omit this section entirely if there are no meaningful regression risks.
+
+---
+
+#### SECTION 9 — Out of Scope
+
+```markdown
+## Out of Scope
+
+The following are not covered by this test plan:
+
+- Performance and load testing
+- Automated test suite execution
+- Backend API contract testing
+- Database integrity verification
+- Accessibility audit (flag for separate review if significant UI changes were made)
+```
+
+---
+
+## Quality Rules
+
+- **No code in the output** — no variable names, class names, CSS property names, file paths (except in Section 3 file references), or terminal commands. The document must be readable by a non-technical QA tester.
+- **State facts, not speculation** — describe what the change does, not what it "might" do.
+- **Before/After must be specific** — "Left-aligned, not vertically centered" is good; "looked wrong" is not.
+- **Test steps must be actionable** — if a step requires developer access or knowledge to execute, rewrite it.
+- **Do not implement fixes or suggest code changes** — this skill produces a test plan only.
+- **For multi-PR plans**: synthesize into a coherent document; do not simply concatenate one plan per PR.
+
+---
+
+## DO NOT IMPLEMENT
+
+This skill produces a **test plan document only**. Do not apply any code changes, edits, or fixes to the repository.

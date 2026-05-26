@@ -1,0 +1,214 @@
+---
+name: pr-review
+description: Review a PR between two git branches with full metadata
+disable-model-invocation: true
+user-invocable: true
+argument-hint: "<PR-number-or-URL> OR <source-branch> [target-branch]"
+---
+
+# PR Review with Branch Comparison
+
+**Arguments**: $ARGUMENTS
+
+If `$ARGUMENTS` is empty, report an error:
+"Usage: /pr-review <PR-number-or-URL> OR /pr-review <source-branch> [target-branch]"
+
+Derive repository metadata from the conversation context (working directory name, git status) and today's date. Use this metadata to populate the header block and derive the output filename.
+
+---
+
+## Mode Detection
+
+Analyze `$ARGUMENTS` to determine the mode:
+
+**Mode 1: PR Number/URL** (if first argument is numeric or a GitHub PR URL)
+- Extract PR number from argument (either directly or from URL pattern `/pull/(\d+)`)
+- This is the RECOMMENDED mode as it auto-detects branches and includes PR metadata
+
+**Mode 2: Explicit Branches** (if first argument looks like a branch name)
+- First argument: source branch (required)
+- Second argument: target branch (optional — auto-detect default branch if not provided)
+
+## Instructions by Mode
+
+### Mode 1: PR Number/URL (Recommended)
+
+1. **Extract PR number**:
+   - If argument is numeric: use as-is
+   - If argument is URL: extract number from `/pull/(\d+)` pattern
+
+2. **Fetch PR metadata**:
+   ```bash
+   gh pr view <PR-number> --json headRefName,baseRefName,title,body,labels,url
+   ```
+   - `headRefName` = source branch
+   - `baseRefName` = target branch
+   - Capture title, body, labels, url for context
+
+3. **Auto-detect repository name**:
+   - Use working directory name from conversation context
+   - If unavailable, run: `basename $(git rev-parse --show-toplevel)`
+
+4. **Diff** (do NOT fetch here — fetch happens once in PROCESS step 1):
+   ```bash
+   git diff origin/<baseRefName>...origin/<headRefName>
+   ```
+
+5. **Include PR metadata in review**:
+   - Add section at top with PR number, title, description, linked issues, labels, URL
+   - This provides essential context for the review
+
+6. **Apply review criteria** (see Review Instructions below)
+
+7. **Output filename**: `YYYY-MM-DD-<repo>-<baseRefName>-<headRefName>-CLAUDE-PR-REVIEW.md`
+
+### Mode 2: Explicit Branches
+
+1. **Parse arguments**:
+   - Source branch: first argument (required)
+   - Target branch: second argument, or auto-detect default branch:
+     ```bash
+     git symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@'
+     ```
+     Fall back to `main` if detection fails.
+
+2. **Auto-detect repository name**:
+   - Use working directory name from conversation context
+   - If unavailable, run: `basename $(git rev-parse --show-toplevel)`
+
+3. **Diff** (do NOT fetch here — fetch happens once in PROCESS step 1):
+   ```bash
+   git diff origin/<target-branch>...origin/<source-branch>
+   ```
+
+4. **Apply review criteria** (see Review Instructions below)
+
+5. **Output filename**: `YYYY-MM-DD-<repo>-<target-branch>-<source-branch>-CLAUDE-PR-REVIEW.md`
+
+---
+
+## Review Instructions (All Modes)
+
+### SETUP:
+1. Use remote tracking branches (`origin/...`) to ensure you're reviewing the canonical state
+2. Do NOT use local branch versions which may be stale or have uncommitted changes
+
+### PROCESS:
+1. Run `git fetch origin` to ensure remote refs are current (once only)
+2. If in PR mode, fetch metadata using `gh pr view` command shown above
+3. Run `git diff` with the appropriate branches to get the exact changeset
+4. For each modified file, read the full file to understand context
+5. Review ONLY the changed lines, but use surrounding code to assess impact
+
+### SCOPE:
+- ONLY report issues in code that appears in the diff
+- Do NOT report issues in unchanged code
+- If a changed line interacts with unchanged code in a problematic way, that IS in scope
+- Trace through call sites and dependencies to assess impact of changes
+
+### GROUND RULES:
+- Trace execution paths through the diff before asserting behaviour. State
+  what DOES happen, not what "could" or "might" happen.
+- Critical/High findings must include a concrete failure scenario. If you
+  cannot describe one, lower the severity.
+- If using "could", "might", or "potentially" — that is Medium or below.
+
+### REVIEW FOR:
+- Bugs or logic errors in the changed code
+- Security vulnerabilities introduced by the changes (injection, auth gaps,
+  secrets, insecure defaults)
+- Edge cases not handled in new/modified code
+- Breaking changes to existing APIs or contracts
+- Race conditions or concurrency issues in changed code
+- Resource leaks introduced by the changes
+- Error handling gaps in modified code paths
+- Data handling issues — PII exposure in logs, unencrypted sensitive data
+- Hardcoded configuration — URLs, credentials, environment-specific values
+  that should be externalised
+- Test coverage — new logic paths, bug fixes, or behavioural changes that
+  lack corresponding test additions or updates in the diff. Do not demand
+  tests for trivial changes (config, copy, formatting).
+- Dependency changes — if the diff modifies a package manifest
+  (`package.json`, `build.gradle`, `go.mod`, `requirements.txt`, `Gemfile`,
+  `*.csproj`, etc.), flag new or changed dependencies. Check for:
+  - Known vulnerabilities (use `gh api` advisories or language-specific
+    audit commands where available)
+  - Major version bumps that may introduce breaking changes
+  - New dependencies that duplicate existing functionality
+
+### SEVERITY DEFINITIONS:
+- **Critical**: The change introduces data loss, a security breach, or a crash
+  in normal operation. Requires a concrete failure scenario.
+- **High**: The change causes production incidents or hard-to-debug failures
+  in realistic scenarios. Requires a concrete example.
+- **Medium**: The change introduces maintainability or reliability risk that
+  will cause problems over time.
+- **Low**: Minor improvement — clean-up, naming, or defensive hardening.
+
+### DO NOT IMPLEMENT FIXES:
+This skill produces a **review only**. Do not apply any code changes, edits, or fixes
+to the repository. Output findings to the review file and stop. Implementation is the
+responsibility of the developer who owns the PR.
+
+### DO NOT REPORT:
+- Style/formatting preferences
+- Pre-existing issues in unchanged code
+- "Nice to have" refactoring suggestions
+- Documentation gaps (unless the change breaks existing docs)
+
+### QUALITY CALIBRATION:
+
+State facts, not speculation:
+
+- NO: "Potential security issue"
+  YES: "User input from `request.query.id` on line 42 is passed unsanitised
+  to the SQL query on line 58, allowing injection via the search endpoint"
+
+- NO: "May cause performance issues"
+  YES: "New loop at line 30 iterates all users for each request — O(n) per
+  call with no caching, will degrade at scale"
+
+### OUTPUT FORMAT:
+
+**If in PR Mode, include PR metadata at top:**
+```markdown
+# PR Review: <PR Title>
+
+**PR Number**: #<number>
+**PR URL**: <url>
+**Source Branch**: <headRefName>
+**Target Branch**: <baseRefName>
+**Labels**: <labels>
+
+## PR Description
+<body>
+
+---
+
+## Review Findings
+```
+
+**For each issue found:**
+
+```
+### [Short Title]
+**Severity**: Critical / High / Medium / Low
+**File**: <file>:<line(s)>
+**What happens**: [Actual runtime behaviour introduced by this change]
+**Failure scenario**: [precondition → trigger → observable failure]
+  (required for Critical/High; optional for Medium/Low)
+**Suggested fix**: [Specific action]
+```
+
+**If no issues found**: "No issues found in the changeset."
+
+**At the end of the review, add a verdict:**
+
+```
+## Verdict
+
+**Approve** / **Request Changes** / **Request Changes (blocking)**
+
+[1-2 sentences summarising the overall assessment and what must change
+before merge, if anything.]
+```
