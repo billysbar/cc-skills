@@ -1,6 +1,6 @@
 ---
 name: security-audit
-description: Run a CSWG-aligned security audit on the current codebase
+description: Run a CSWG-aligned security audit (full repo or PR diff)
 user-invocable: true
 argument-hint: "[<pr-number> | <github-pr-url>] [output-directory]"
 ---
@@ -21,7 +21,10 @@ Parse `$ARGUMENTS` to determine the audit mode before doing anything else:
 | `/security-audit` | Full local repo audit (current branch) | `YYYY-MM-DD-<project>-<branch>-SECURITY-AUDIT.md` |
 | `/security-audit 123` | PR audit — bare PR number | `YYYY-MM-DD-<project>-PR-123-SECURITY-AUDIT.md` |
 | `/security-audit https://github.com/…/pull/123` | PR audit — GitHub PR URL | `YYYY-MM-DD-<project>-PR-123-SECURITY-AUDIT.md` |
-| Either mode accepts an optional trailing output directory path. If omitted, write to the current working directory. |
+
+In either mode, an optional trailing output directory path may be appended. If omitted, write to the current working directory.
+
+Sanitise the `<project>` and `<branch>` filename components: lowercase, replace spaces and slashes with hyphens, strip non-alphanumeric characters (excluding hyphens).
 
 ---
 
@@ -55,6 +58,12 @@ gh pr diff <number>
 For every file reported as changed, read its current full content — not just the
 diff lines. Diff context alone is insufficient for tracing injection paths,
 understanding auth flows, or detecting secrets.
+
+If the PR changes more than 20 files, prioritise by risk: authentication/session
+files, cryptographic modules, input validation handlers, configuration files, and
+any file with `admin`, `token`, `key`, `secret`, or `password` in its path.
+Examine lower-priority files via diff only. Note in the Scope Statement which
+files were reviewed in full vs. diff-only and why.
 
 **Step 3 — Determine audit scope:**
 - Primary scope: all code introduced or modified by the PR.
@@ -108,6 +117,13 @@ assesses — aligned to recognised security standards and frameworks.
 - Encryption at rest and in transit, PII handling, data classification
 - Retention and disposal policies, GDPR/CCPA compliance
 - Data minimisation, consent tracking, right to deletion
+- Cleartext storage of sensitive data (CWE-312) — PII, credentials, or tokens written
+  unencrypted to disk, databases, or logs
+- Cleartext transmission of sensitive data (CWE-319) — PII or credentials in unencrypted
+  channels; check internal service calls, not just external-facing APIs
+- Data masking and tokenisation — PII fields (SSN, card numbers, health data) masked or
+  tokenised before storage; check ORM serialisers and API response schemas for over-exposure
+  of sensitive fields
 
 ### 3. Input Validation & Injection Prevention
 - SQL, XSS, command, LDAP, template injection vectors
@@ -140,6 +156,21 @@ assesses — aligned to recognised security standards and frameworks.
   (CWE-416), buffer overflows (CWE-119), and integer overflows feeding size
   calculations (CWE-190). Findings in this class with remote exploitability
   are treated as Critical.
+- HTTP request smuggling (CWE-444) — conflicting Content-Length/Transfer-Encoding
+  headers exploited when a front-end proxy and back-end server disagree on request
+  boundaries; check server pairings (nginx+gunicorn, HAProxy+Express, CDN+origin)
+  for desync risk
+- DOM-based XSS (CWE-79) — sources: `location.hash`, `document.referrer`,
+  `postMessage` data, URL params; sinks: `innerHTML`, `document.write`, `eval`,
+  `setTimeout(string)`; requires client-side JS analysis separate from server-side
+  template rendering
+- Prototype pollution (CWE-1321) — in JavaScript/Node.js codebases: attacker-controlled
+  keys (`__proto__`, `constructor.prototype`) merged into objects via `_.merge`,
+  `Object.assign`, or `JSON.parse` on untrusted input; can escalate to RCE via
+  gadget chains
+- ReDoS (CWE-1333) — user-controlled input matched against catastrophically backtracking
+  regexes (e.g. `(a+)+` patterns); verify validation regexes are linear-time or use
+  timeout/length guards on untrusted input
 
 ### 4. Secrets Management
 - Hardcoded credentials, API keys, tokens in source code
@@ -168,11 +199,22 @@ assesses — aligned to recognised security standards and frameworks.
 - TLS configuration, certificate validation, protocol versions
 - Certificate pinning, API transport security
 - Internal service-to-service communication security
+- TLS version enforcement — reject TLS 1.0 and 1.1; prefer TLS 1.3; verify server
+  configuration explicitly disables deprecated cipher suites
+- Improper certificate validation (CWE-295) — disabled hostname verification or
+  `InsecureSkipVerify` equivalents in HTTP clients, gRPC stubs, or message brokers
+- WebSocket origin validation — `Origin` header not checked on WebSocket upgrade
+  requests; verify server-side origin allowlist is enforced
+- mTLS for internal service mesh — verify service-to-service calls in zero-trust
+  architectures use mutual TLS rather than relying solely on network segmentation
 
 ### 7. Logging, Monitoring & Audit Trail
 - Security event logging (auth attempts, privilege changes, data access)
 - PII in logs, log integrity, tamper resistance
 - SIEM readiness, alerting on security-relevant events
+- Log injection (CWE-117) — newline characters in user-controlled input embedded into
+  log streams allow log record forgery; verify inputs are sanitised or structured
+  logging is used with parameterised fields rather than string concatenation
 
 ### 8. Error Handling & Information Disclosure (OWASP A10:2025)
 - Failing open (CWE-636, OWASP A10:2025) — exceptions in authentication or
@@ -199,6 +241,9 @@ assesses — aligned to recognised security standards and frameworks.
     standards, exposed LoadBalancer services
   - Terraform/CloudFormation: over-permissive IAM policies, public S3 buckets,
     unencrypted storage, open security groups (0.0.0.0/0)
+- Web cache poisoning — unkeyed HTTP headers (`X-Forwarded-Host`, `X-Original-URL`,
+  `X-Forwarded-Proto`) reflected into cached responses; verify CDN/proxy cache key
+  configuration excludes attacker-injectable headers
 - If the codebase targets Android or iOS: assess against OWASP MASVS v2.0 and
   OWASP Mobile Top 10 2024 — insecure data storage (M2: SharedPreferences,
   SQLite, external storage); improper platform usage (M1: exported components,
@@ -213,6 +258,18 @@ assesses — aligned to recognised security standards and frameworks.
 - Deprecated algorithms (MD5, SHA1, DES, RC4)
 - RNG quality (use of cryptographically secure sources)
 - Key management lifecycle
+- Timing attacks (CWE-208) — non-constant-time equality checks for HMAC signatures,
+  API tokens, or session IDs allow statistical recovery via response timing; verify
+  use of `hmac.compare_digest()` (Python), `crypto.timingSafeEqual()` (Node.js),
+  or equivalent constant-time comparison functions
+- KDF recommendations — password hashing must use memory-hard KDFs: Argon2id (preferred),
+  bcrypt (cost ≥ 12), or scrypt; PBKDF2 acceptable only with ≥ 600,000 iterations
+  (NIST SP 800-132); never use raw SHA-family hashes for passwords
+- Nonce/IV reuse (CWE-330) — GCM nonce reuse with the same key is catastrophic
+  (breaks both confidentiality and authentication); verify nonce generation uses a
+  CSPRNG and never repeats; check for CBC IV reuse and ECB mode usage
+- Padding oracle (CBC mode) — verify CBC-mode decryption does not leak padding
+  validity through timing or error differences; prefer authenticated encryption (AES-GCM)
 
 ### 11. Business Logic & Authorisation
 - IDOR (Insecure Direct Object References, CWE-639, OWASP A01:2025) —
@@ -224,6 +281,10 @@ assesses — aligned to recognised security standards and frameworks.
   DoS exhaustion (OWASP API4:2023)
 - Privilege boundary enforcement, transaction integrity
 - Workflow bypass, state manipulation
+- GraphQL (if applicable) — introspection enabled in production leaks full schema;
+  unbounded query depth and complexity without cost analysis enables DoS; batching
+  attacks and alias flooding bypass rate limiting; field suggestions leak schema to
+  unauthenticated users
 
 ### 12. Secure SDLC & Compliance Posture
 - SAST/DAST integration in CI/CD pipeline
@@ -237,7 +298,10 @@ assesses — aligned to recognised security standards and frameworks.
     artifact integrity
   - Dependency confusion / typosquatting risk in npm/PyPI/NuGet namespaces
   - CI/CD pipeline integrity — pinned action versions (GitHub Actions SHA
-    pinning), no untrusted third-party runners
+    pinning), no untrusted third-party runners; `GITHUB_TOKEN` over-permission
+    (write-all vs. minimal permissions); `pull_request_target` misuse granting
+    repository secrets to fork PR workflows; environment secrets vs. repository
+    secrets separation
   - Software Bill of Materials (SBOM) presence and completeness (SPDX or
     CycloneDX format)
 - If the codebase integrates LLM/AI features: assess against OWASP LLM
@@ -254,6 +318,8 @@ assesses — aligned to recognised security standards and frameworks.
 - **Low**: Hardening recommendation. Best practice deviation.
 
 If using "could", "might", or "potentially" — that is Medium or below.
+
+**Chained findings**: When two or more findings combine to produce a higher-severity outcome (e.g. open redirect + CSRF enabling auth bypass), document a separate combined finding at the elevated severity with an explicit chain-of-exploitation scenario referencing the constituent findings by title.
 
 ## Grading Rubric
 
@@ -272,7 +338,10 @@ Modifiers (each applies independently, cumulative):
   (high CSWG scrutiny areas)
 - -1 if 10+ Low findings (indicates systemic hardening debt)
 - -1 if this is a re-audit and zero findings from the previous audit have been
-  remediated (indicates stalled remediation posture)
+  remediated (indicates stalled remediation posture). To detect: if a prior audit
+  report exists in the output directory or is referenced in `$ARGUMENTS`, compare
+  finding titles; if any previously reported Critical/High findings remain
+  unchanged, apply this modifier.
 
 Final score is clamped to 1-10.
 
@@ -286,6 +355,7 @@ Final score is clamped to 1-10.
          (CVSS v4.0 may be used where the organisation standard requires it —
          format: CVSS:4.0/AV:_/AC:_/AT:_/PR:_/UI:_/VC:_/VI:_/VA:_/SC:_/SI:_/SA:_)
 **Location**: file:line
+**Scope**: In-scope (introduced by this PR) | Context (pre-existing — not introduced by this PR)  [PR mode only; omit for full-repo audits]
 **What happens**: [Actual runtime behaviour — traced, not speculated]
 **Exploit scenario**: [attacker action -> precondition -> observable impact]
   (required for Critical/High; optional for Medium/Low)
@@ -310,7 +380,8 @@ Audit Mode          : Full Repo / PR #<number> — <PR title>
 Audit Scope         : <Full codebase on <branch> / PR #N: <N files changed, +X −Y lines>>
 Overall Security Grading: <X/10 — derived from findings>
 CSWG Ready          : <Ready / Ready with caveats / Not ready — one-line justification>
-Frameworks Referenced: OWASP ASVS v5.0.0, OWASP Top 10 2025, OWASP API Security Top 10 2023,
+Frameworks Referenced: OWASP ASVS v5.0.0 (coverage aligned in spirit; not a verbatim chapter mapping),
+                       OWASP Top 10 2025, OWASP API Security Top 10 2023,
                        CWE Top 25 2025, NCSC CAF, NIST CSF, ISO 27001 Annex A, OWASP LLM Top 10 v2.0 (2025),
                        OWASP MASVS v2.0, OWASP Mobile Top 10 2024 (if mobile)
 ```
@@ -415,6 +486,7 @@ Before finalising the report, verify:
 ## Done When
 
 - [ ] `.md` file written to the output directory with the correct filename
+- [ ] Report opened and header block verified to contain no unreplaced `<...>` placeholder tokens
 - [ ] No source files were edited, created, or deleted
 - [ ] No remediation steps were applied to the codebase
 
@@ -439,6 +511,7 @@ as follows:
 
 | Version | Date       | Changes |
 |---------|------------|---------|
+| 1.6     | 2026-05-28 | Applied Copilot review findings: fixed malformed invocation table row (moved trailing note out of table); added filename sanitisation rule for project/branch components; added optional `Scope` field to finding format for PR extended-scope labelling; added re-audit modifier detection heuristic; added ASVS v5.0.0 alignment note to Frameworks Referenced. Coverage gaps: Area 3 — HTTP request smuggling (CWE-444), DOM-based XSS (CWE-79), prototype pollution (CWE-1321 for JS/Node.js), ReDoS (CWE-1333); Area 2 — CWE-312/CWE-319, data masking/tokenisation; Area 6 — TLS version enforcement, CWE-295, WebSocket origin validation, mTLS; Area 7 — log injection (CWE-117); Area 9 — web cache poisoning; Area 10 — timing attacks (CWE-208), KDF recommendations, nonce/IV reuse (CWE-330/GCM), padding oracle; Area 11 — GraphQL security (conditional); Area 12 — GITHUB_TOKEN over-permission, pull_request_target fork PR exposure, environment vs. repo secrets. Enhancements: chained findings guidance added to Severity Definitions; Mode B large-PR prioritisation rule (>20 files); Done When placeholder validation step; updated description frontmatter. |
 | 1.5     | 2026-05-26 | Updated to OWASP Top 10 2025 (replaced all 2021 references); fixed SSRF OWASP citation (A10:2021 retired — no standalone 2025 category, note added); added CSRF (CWE-352, A01:2025) to Area 1; added A10:2025 Mishandling of Exceptional Conditions with CWE-636 Failing Open and CWE-209 to Area 8; added Path Traversal (CWE-22), Insecure Deserialization (CWE-502, A08:2025), Open Redirect (CWE-601), and conditional memory safety block (CWE-787/CWE-125/CWE-416/CWE-190 for memory-unsafe languages) to Area 3; extended JWT token lifecycle bullet (alg:none, RS256/HS256 key-confusion, jku/kid injection) in Area 1; specified CVSS:3.1 vector format with v4.0 note in Finding Format; updated CWE Top 25 → CWE Top 25 2025 in Frameworks Referenced; added CWE-639 to IDOR bullet in Area 11; enumerated HTTP security headers explicitly in Area 9; added supply chain elevation note (A03:2025 is #3) to Area 5; updated OWASP LLM Top 10 to v2.0 (2025) in Area 12 and Frameworks Referenced. |
 | 1.4     | 2026-05-26 | Removed disable-model-invocation frontmatter flag (prose guard is sufficient; flag had ambiguous harness semantics). Made CVSS base score required for Critical/High findings, explicitly omitted for Medium/Low. Added re-audit regression modifier (-1 if zero prior findings remediated). Added conditional OWASP MASVS v2.0 / Mobile Top 10 2024 coverage to Area 9 for Android/iOS projects. Added OWASP MASVS v2.0 and Mobile Top 10 2024 (if mobile) to Frameworks Referenced header template. Updated Completeness Check with CVSS and mobile coverage checklist items. Updated grading rubric note to reference all three modifiers. |
 | 1.3     | 2026-05-26 | PR mode argument syntax updated: bare PR number (`123`) and GitHub PR URL (`https://github.com/.../pull/123`) now accepted directly — the `pr` prefix is no longer required. |
