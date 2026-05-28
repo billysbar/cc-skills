@@ -96,6 +96,15 @@ assesses — aligned to recognised security standards and frameworks.
 - Identify root causes, not symptoms.
 - Analyse cross-file interactions — do not review files in isolation.
 
+## Audience Calibration
+
+This skill produces **developer-oriented security reviews**, not security consulting firm engagements.
+
+- Reports must be achievable: prioritise findings that a development team can address within a normal sprint
+- Aim for 10–20 actionable findings per report; avoid padding with theoretical risks that have no practical exploit path in the actual deployment context
+- Severity reflects real-world exploitability in the codebase's actual deployment context, not CVSS theoretical maximums
+- Critical = exploitable with realistic effort in this deployment. High = fix this sprint. Medium = backlog within 30 days. Low = address when touching the relevant code.
+
 ## The 12 CSWG Review Areas
 
 ### 1. Authentication & Access Control
@@ -108,6 +117,17 @@ assesses — aligned to recognised security standards and frameworks.
 - OAuth 2.0 / OIDC: redirect_uri validation, PKCE enforcement on public clients,
   implicit flow deprecation, authorization code interception, token leakage via
   Referer headers or logs
+- OAuth 2.1 (current standard — formerly-optional controls are now mandatory):
+  PKCE required for **all** clients (not just public clients); redirect URI must be
+  exact string match (no wildcards or partial patterns); implicit grant flow is
+  **removed** — any usage is a High finding; Resource Owner Password Credentials
+  flow removed; bearer tokens prohibited in URL query strings
+- WebAuthn / Passkeys (if applicable): verify account recovery flows (SMS/email)
+  cannot bypass the passkey step — recovery is the weakest link; verify XSS
+  cannot trigger attacker-controlled passkey registration (attacker can add their
+  key even without stealing the user's private key); for high-assurance
+  applications, flag synced passkeys (cross-device cloud sync) as weaker than
+  device-bound credentials
 - CSRF (Cross-Site Request Forgery, CWE-352, OWASP A01:2025) — verify CSRF
   tokens or SameSite=Strict/Lax cookie attributes on all state-changing
   requests; check HTML forms, API mutation endpoints, and single-page app
@@ -171,6 +191,32 @@ assesses — aligned to recognised security standards and frameworks.
 - ReDoS (CWE-1333) — user-controlled input matched against catastrophically backtracking
   regexes (e.g. `(a+)+` patterns); verify validation regexes are linear-time or use
   timeout/length guards on untrusted input
+- If the codebase is a **Ruby on Rails** application:
+  - Mass assignment — verify strong parameters (`params.require(:model).permit(...)`) on
+    every controller action; un-scoped `params` or `update(params)` allows attacker-set fields
+  - XSS via `html_safe` / `raw` — mark all usages and verify no user-controlled string is
+    marked safe without sanitisation
+  - ActiveRecord SQL injection — flag `.where("col = '#{value}'")`; use placeholder syntax
+    `.where("col = ?", value)` or hash conditions
+  - RCE via `send()` with user input — arbitrary method call; flag all `send(params[...])` patterns
+  - RCE via `constantize` / `safe_constantize` with user input — class name injection
+  - `eval` / `instance_eval` / `class_eval` with user-controlled strings
+  - Secrets — verify `config/secrets.yml` and `config/credentials.yml.enc` contain no
+    plaintext secrets committed to version control; use `rails credentials:edit`
+  - SAST: supplement semgrep with **Brakeman** (Rails-specific static analyser)
+- If the codebase is a **Node.js / Express** application:
+  - Command injection — `child_process.exec(cmd + userInput)` is High; use `execFile()` or
+    `spawn()` with an argument array instead
+  - RCE — `eval()` / `new Function(userInput)` with user-controlled strings
+  - Path traversal via `require()` — `require(userInput)` loads arbitrary modules; validate paths
+  - Template injection — EJS `<%- userInput %>`, Handlebars `{{{ userInput }}}`, Pug
+    unescaped interpolation allow script injection
+  - Open redirect — `res.redirect(req.query.next)` without allowlist validation
+  - Missing security headers — verify `helmet()` middleware is applied to the Express app
+    (sets CSP, HSTS, X-Frame-Options, X-Content-Type-Options); absence is a Medium finding
+  - Unhandled promise rejections — `process.on('unhandledRejection')` should terminate
+    gracefully; swallowed async errors in auth/authz paths can create bypass conditions
+  - `npm audit` — run as part of dependency review (see Area 5)
 
 ### 4. Secrets Management
 - Hardcoded credentials, API keys, tokens in source code
@@ -191,7 +237,12 @@ assesses — aligned to recognised security standards and frameworks.
 - Vendored code audit, SCA coverage
   - Container/IaC scanning: trivy, grype
   - Multi-ecosystem SCA: snyk, OWASP Dependency-Check
-  - SAST: semgrep, bandit (Python), gosec (Go), eslint-plugin-security (JS/TS)
+  - SAST: semgrep, bandit (Python), gosec (Go), eslint-plugin-security (JS/TS),
+    Brakeman (Ruby on Rails)
+  - **SAST blind spots**: tools miss approximately half of vulnerabilities — particularly
+    business logic flaws, multi-step authorization chains, and data flows through
+    third-party library internals. A clean SAST result does not substitute for manual
+    review of authentication flows, authorization logic, and high-risk data paths.
 - Unsafe consumption of third-party APIs (OWASP API10:2023) — unvalidated data
   from external API responses used in business logic or rendered to users
 
@@ -245,13 +296,18 @@ assesses — aligned to recognised security standards and frameworks.
   `X-Forwarded-Proto`) reflected into cached responses; verify CDN/proxy cache key
   configuration excludes attacker-injectable headers
 - If the codebase targets Android or iOS: assess against OWASP MASVS v2.0 and
-  OWASP Mobile Top 10 2024 — insecure data storage (M2: SharedPreferences,
+  OWASP Mobile Top 10 2024 — insecure data storage (M9: SharedPreferences,
   SQLite, external storage); improper platform usage (M1: exported components,
   deep links, pending intents, URL schemes); insufficient binary protections
-  (M9: obfuscation, certificate pinning where risk warrants it, root/jailbreak
+  (M7: obfuscation, certificate pinning where risk warrants it, root/jailbreak
   detection for high-risk apps); WebView misconfigurations (M7:
   addJavascriptInterface, file:// access, mixed content); exported component
-  attack surface (AndroidManifest android:exported, intent filters).
+  attack surface (AndroidManifest android:exported, intent filters);
+  inadequate supply chain security (M2: third-party SDKs without integrity
+  verification, AAR/JAR dependencies from untrusted or unpinned sources);
+  inadequate privacy controls (M6: excessive permissions, data collection
+  beyond stated purpose, missing data minimisation, sensitive data retained
+  longer than required).
 
 ### 10. Cryptography
 - Algorithm strength and key lengths
@@ -279,8 +335,16 @@ assesses — aligned to recognised security standards and frameworks.
   returning more fields than the caller is entitled to see
 - Rate limiting, abuse prevention; unrestricted resource consumption /
   DoS exhaustion (OWASP API4:2023)
+- Missing authorization (CWE-862, CWE Top 25 2025 #5) — functions or endpoints that
+  simply do not check authorization before performing sensitive operations; in Rails:
+  missing `before_action :authenticate_user!` or `authorize!`; in Node/Express:
+  middleware that can be bypassed via header manipulation or route ordering
 - Privilege boundary enforcement, transaction integrity
 - Workflow bypass, state manipulation
+- Unrestricted access to sensitive business flows (API6:2023) — verify high-value
+  flows (account creation, payment initiation, coupon/referral use, bulk data export)
+  have bot detection, CAPTCHA, or anomaly controls preventing automated abuse;
+  distinct from rate limiting (API4) — this is about abusing legitimate endpoints
 - GraphQL (if applicable) — introspection enabled in production leaks full schema;
   unbounded query depth and complexity without cost analysis enables DoS; batching
   attacks and alias flooding bypass rate limiting; field suggestions leak schema to
@@ -304,9 +368,14 @@ assesses — aligned to recognised security standards and frameworks.
     secrets separation
   - Software Bill of Materials (SBOM) presence and completeness (SPDX or
     CycloneDX format)
-- If the codebase integrates LLM/AI features: assess against OWASP LLM
-  Top 10 v2.0 (2025) — prompt injection (LLM01), insecure output handling (LLM02),
-  excessive agency (LLM08)
+- If the codebase integrates LLM/AI features: assess against OWASP LLM Top 10 v2.0 (2025):
+  - LLM01 — Prompt Injection: attacker manipulates LLM inputs to override instructions or exfiltrate data
+  - LLM03 — Supply Chain Vulnerabilities: compromised model weights, poisoned fine-tuning data, malicious plugins
+  - LLM04 — Data and Model Poisoning: backdoor triggers in training data or RAG knowledge base poisoning
+  - LLM05 — Improper Output Handling: LLM-generated content used in downstream operations (SQL, shell, HTML) without sanitisation
+  - LLM06 — Excessive Agency: LLM granted more permissions or autonomy than required; can trigger unauthorised actions
+  - LLM07 — System Prompt Leakage: system prompts containing credentials, sensitive logic, or internal instructions exposed via extraction
+  - LLM08 — Vector and Embedding Weaknesses: RAG database poisoning, cross-context data leakage through embeddings
 
 ## Severity Definitions
 
@@ -382,8 +451,8 @@ Overall Security Grading: <X/10 — derived from findings>
 CSWG Ready          : <Ready / Ready with caveats / Not ready — one-line justification>
 Frameworks Referenced: OWASP ASVS v5.0.0 (coverage aligned in spirit; not a verbatim chapter mapping),
                        OWASP Top 10 2025, OWASP API Security Top 10 2023,
-                       CWE Top 25 2025, NCSC CAF, NIST CSF, ISO 27001 Annex A, OWASP LLM Top 10 v2.0 (2025),
-                       OWASP MASVS v2.0, OWASP Mobile Top 10 2024 (if mobile)
+                       CWE Top 25 2025, NCSC CAF v4.0, NIST CSF, ISO/IEC 27001:2022 Annex A,
+                       OWASP LLM Top 10 v2.0 (2025), OWASP MASVS v2.0, OWASP Mobile Top 10 2024 (if mobile)
 ```
 
 Source values from repo metadata. Write "Unknown" if undetermined.
@@ -392,7 +461,34 @@ For PR audits: follow the header with a **Scope Statement** paragraph — one
 short paragraph summarising what the PR does and which files were examined.
 This orients the reader before findings begin.
 
-2. **Management Summary** — self-contained section for non-technical stakeholders:
+2. **Audit Target** — a brief orientation section inserted immediately after the header
+   block. Populate from README, package manifests, git context, and `$ARGUMENTS`.
+   Use "Unknown — findings assume internet-accessible deployment" for any unknown field.
+
+```
+## Audit Target
+
+**Audience**: Engineering team — experienced developers with security awareness.
+  This report is not a security consulting engagement. Findings are calibrated
+  to be actionable within a normal development sprint.
+
+**Technology Stack**: <primary language/framework — e.g. Node.js/Express, Ruby on Rails 7, Android Kotlin>
+
+**Deployment Context**: <how this app is deployed — e.g. "Rails API behind nginx on AWS ECS;
+  Android client on Play Store">
+
+**Audit Focus**: <what this audit prioritises — e.g. "API surface, authentication flows,
+  dependency supply chain, Android data storage">
+
+**Out of Scope**: <what was intentionally excluded — e.g. "infrastructure hardening,
+  penetration testing of deployed endpoints">
+
+**Findings Calibration**: Critical = exploitable with realistic effort in this deployment.
+  High = fix this sprint. Medium = backlog within 30 days.
+  Low = address when touching the relevant code.
+```
+
+3. **Management Summary** — self-contained section for non-technical stakeholders:
    - Finding count table:
 
      | Severity | Count |
@@ -412,7 +508,7 @@ This orients the reader before findings begin.
    - A manager should be able to read only this section and understand the
      security state of the codebase
 
-3. **Threat Model Overview** — entry points, trust boundaries, data flows,
+4. **Threat Model Overview** — entry points, trust boundaries, data flows,
    attack surface. Use a plain-text ASCII box-and-arrow diagram. No Mermaid.
 
    Apply STRIDE per-element: for each component in the diagram, enumerate
@@ -420,12 +516,16 @@ This orients the reader before findings begin.
    Denial of Service, Elevation of Privilege). Identify external actors, entry
    points, trust boundaries crossed, and sensitive data stores.
 
-4. **Findings** — grouped by the 12 CSWG review areas, sorted by severity
+   Verify the diagram reflects **actual deployed state**, not design intent —
+   discrepancies (undocumented reverse proxies, unaccounted microservices, missing
+   CDN layer) are themselves Low findings.
+
+5. **Findings** — grouped by the 12 CSWG review areas, sorted by severity
    within each group. Every review area must appear — either with findings,
    an explicit "no issues found" statement, or (PR mode only) "not touched
    by this PR" where the changed files have no relevance to the area.
 
-5. **CSWG Readiness Assessment** — pass/fail table covering each of the
+6. **CSWG Readiness Assessment** — pass/fail table covering each of the
    12 areas:
 
 ```
@@ -434,7 +534,7 @@ This orients the reader before findings begin.
 
 Status values: PASS / FAIL / PARTIAL — with one-line justification.
 
-6. **Remediation Plan** — prioritised by CSWG impact:
+7. **Remediation Plan** — prioritised by CSWG impact:
    - P0: Must fix before CSWG submission (Critical/High)
    - P1: Should fix, will likely be flagged (Medium with high visibility)
    - P2: Improve when possible (remaining Medium/Low)
@@ -465,6 +565,7 @@ State facts, not speculation:
 
 Before finalising the report, verify:
 
+- [ ] Audit Target section populated (Technology Stack, Deployment Context, Audit Focus, Out of Scope, Calibration note)
 - [ ] Management Summary is self-contained and jargon-free
 - [ ] Audit mode and scope are clearly stated in the header block
 - [ ] PR audit: Scope Statement paragraph present below the header
@@ -492,9 +593,9 @@ Before finalising the report, verify:
 
 ---
 
-## Appendix: NCSC CAF Objective Mapping
+## Appendix: NCSC CAF v4.0 Objective Mapping
 
-The NCSC Cyber Assessment Framework (CAF) is referenced in this skill's
+The NCSC Cyber Assessment Framework v4.0 (August 2025) is referenced in this skill's
 framework list. Its four top-level objectives map to the 12 review areas
 as follows:
 
@@ -511,6 +612,7 @@ as follows:
 
 | Version | Date       | Changes |
 |---------|------------|---------|
+| 1.7     | 2026-05-28 | Deep self-analysis against external standards, developer-calibrated for Node.js/Rails/Android teams. Added Audience Calibration section (developer-oriented, 10–20 findings, sprint-achievable severity). Added Audit Target section to Output Structure (tech stack, deployment context, audit focus, out-of-scope, calibration note). Fixed LLM Top 10 v2.0 numbering (LLM02/LLM06/LLM08 were using v1 numbers); expanded LLM block to cover LLM03 (supply chain), LLM04 (data poisoning), LLM07 (system prompt leakage), LLM08 (vector/embedding weaknesses). Updated NCSC CAF to v4.0 (August 2025) in header and appendix. Updated ISO 27001 to specify 2022 version. Added OAuth 2.1 mandatory requirements to Area 1 (PKCE for all clients, exact URI match, implicit/password grant removal). Added WebAuthn/passkey conditional block to Area 1. Added SAST blind-spot caveat to Area 5 (tools miss ~50% of vulns; clean SAST ≠ secure code). Added platform-specific Rails block to Area 3 (mass assignment, html_safe/raw, ActiveRecord string interpolation, send/constantize RCE, eval, Brakeman). Added Node.js/Express block to Area 3 (exec injection, eval/new Function, require() path traversal, template injection, helmet middleware, unhandled promise rejections). Added CWE-862 (Missing Authorization, CWE Top 25 2025 #5) to Area 11. Added API6:2023 (unrestricted business flow access) to Area 11. Added Mobile Top 10 2024 M2 (supply chain) and M6 (privacy) to Android block in Area 9. Added deployed-state check to Threat Model section. Fixed Output Structure section numbering (1→7). Added Audit Target checklist item to Completeness Check. |
 | 1.6     | 2026-05-28 | Applied Copilot review findings: fixed malformed invocation table row (moved trailing note out of table); added filename sanitisation rule for project/branch components; added optional `Scope` field to finding format for PR extended-scope labelling; added re-audit modifier detection heuristic; added ASVS v5.0.0 alignment note to Frameworks Referenced. Coverage gaps: Area 3 — HTTP request smuggling (CWE-444), DOM-based XSS (CWE-79), prototype pollution (CWE-1321 for JS/Node.js), ReDoS (CWE-1333); Area 2 — CWE-312/CWE-319, data masking/tokenisation; Area 6 — TLS version enforcement, CWE-295, WebSocket origin validation, mTLS; Area 7 — log injection (CWE-117); Area 9 — web cache poisoning; Area 10 — timing attacks (CWE-208), KDF recommendations, nonce/IV reuse (CWE-330/GCM), padding oracle; Area 11 — GraphQL security (conditional); Area 12 — GITHUB_TOKEN over-permission, pull_request_target fork PR exposure, environment vs. repo secrets. Enhancements: chained findings guidance added to Severity Definitions; Mode B large-PR prioritisation rule (>20 files); Done When placeholder validation step; updated description frontmatter. |
 | 1.5     | 2026-05-26 | Updated to OWASP Top 10 2025 (replaced all 2021 references); fixed SSRF OWASP citation (A10:2021 retired — no standalone 2025 category, note added); added CSRF (CWE-352, A01:2025) to Area 1; added A10:2025 Mishandling of Exceptional Conditions with CWE-636 Failing Open and CWE-209 to Area 8; added Path Traversal (CWE-22), Insecure Deserialization (CWE-502, A08:2025), Open Redirect (CWE-601), and conditional memory safety block (CWE-787/CWE-125/CWE-416/CWE-190 for memory-unsafe languages) to Area 3; extended JWT token lifecycle bullet (alg:none, RS256/HS256 key-confusion, jku/kid injection) in Area 1; specified CVSS:3.1 vector format with v4.0 note in Finding Format; updated CWE Top 25 → CWE Top 25 2025 in Frameworks Referenced; added CWE-639 to IDOR bullet in Area 11; enumerated HTTP security headers explicitly in Area 9; added supply chain elevation note (A03:2025 is #3) to Area 5; updated OWASP LLM Top 10 to v2.0 (2025) in Area 12 and Frameworks Referenced. |
 | 1.4     | 2026-05-26 | Removed disable-model-invocation frontmatter flag (prose guard is sufficient; flag had ambiguous harness semantics). Made CVSS base score required for Critical/High findings, explicitly omitted for Medium/Low. Added re-audit regression modifier (-1 if zero prior findings remediated). Added conditional OWASP MASVS v2.0 / Mobile Top 10 2024 coverage to Area 9 for Android/iOS projects. Added OWASP MASVS v2.0 and Mobile Top 10 2024 (if mobile) to Frameworks Referenced header template. Updated Completeness Check with CVSS and mobile coverage checklist items. Updated grading rubric note to reference all three modifiers. |
