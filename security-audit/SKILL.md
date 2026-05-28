@@ -59,6 +59,12 @@ For every file reported as changed, read its current full content — not just t
 diff lines. Diff context alone is insufficient for tracing injection paths,
 understanding auth flows, or detecting secrets.
 
+**Line number accuracy**: The diff shows insertion offsets, not the file's actual line
+numbers. For **new files** added by the PR (all lines are `+` in the diff), you MUST
+read the file directly to obtain correct line numbers before citing them in a finding.
+Never infer a line number from diff position — a new 40-line file added after 200 lines
+of diff header will appear at diff offset ~240, not at line 240 in the file itself.
+
 If the PR changes more than 20 files, prioritise by risk: authentication/session
 files, cryptographic modules, input validation handlers, configuration files, and
 any file with `admin`, `token`, `key`, `secret`, or `password` in its path.
@@ -233,6 +239,14 @@ This skill produces **developer-oriented security reviews**, not security consul
 > access control findings.
 - Known CVEs — run `npm audit`, `dotnet list package --vulnerable`,
   `pip audit`, or equivalent for the project's ecosystem
+- **Reachability before CVSS**: Before assigning severity to a dependency CVE, verify
+  whether the vulnerable code path is reachable in the **production artifact**. If the
+  affected package is used only in build tooling, test runners, or dev scripts (and is
+  not bundled into the deployed output), downgrade the severity by at least one level
+  and document the reachability assessment. Do not report the advisory's base CVSS score
+  as the finding's severity without this check — the advisory score assumes full
+  reachability. Example: a Critical CVE in a package only called from Grunt tasks
+  that never reaches the production bundle is a Medium at most in the deployed context.
 - Dependency pinning, integrity verification (lock file hashes)
 - Vendored code audit, SCA coverage
   - Container/IaC scanning: trivy, grype
@@ -423,6 +437,10 @@ Final score is clamped to 1-10.
 **CVSS**: <base score> (CVSS:3.1/AV:_/AC:_/PR:_/UI:_/S:_/C:_/I:_/A:_)  [required for Critical/High; omit for Medium/Low]
          (CVSS v4.0 may be used where the organisation standard requires it —
          format: CVSS:4.0/AV:_/AC:_/AT:_/PR:_/UI:_/VC:_/VI:_/VA:_/SC:_/SI:_/SA:_)
+         For dependency CVEs: use the advisory score only if the vulnerable code path
+         is reachable in the production artifact; otherwise adjust down and note
+         "Advisory CVSS X.X — effective score Y.Y in this deployment (code path
+         unreachable in production bundle)"
 **Location**: file:line
 **Scope**: In-scope (introduced by this PR) | Context (pre-existing — not introduced by this PR)  [PR mode only; omit for full-repo audits]
 **What happens**: [Actual runtime behaviour — traced, not speculated]
@@ -612,6 +630,7 @@ as follows:
 
 | Version | Date       | Changes |
 |---------|------------|---------|
+| 1.8     | 2026-05-28 | Two fixes from live audit QA: (1) Line number accuracy — added explicit rule that new files added by a PR must be read directly before citing line numbers; diff insertion offsets are not file line numbers. (2) Dependency CVE reachability — added reachability-before-CVSS rule to Area 5: verify the vulnerable code path reaches the production artifact before assigning the advisory CVSS score; if the dependency is only in build tooling/test scripts, downgrade severity by at least one level and document the reachability gap. Reinforced in Finding Format CVSS field with example phrasing for non-reachable paths. |
 | 1.7     | 2026-05-28 | Deep self-analysis against external standards, developer-calibrated for Node.js/Rails/Android teams. Added Audience Calibration section (developer-oriented, 10–20 findings, sprint-achievable severity). Added Audit Target section to Output Structure (tech stack, deployment context, audit focus, out-of-scope, calibration note). Fixed LLM Top 10 v2.0 numbering (LLM02/LLM06/LLM08 were using v1 numbers); expanded LLM block to cover LLM03 (supply chain), LLM04 (data poisoning), LLM07 (system prompt leakage), LLM08 (vector/embedding weaknesses). Updated NCSC CAF to v4.0 (August 2025) in header and appendix. Updated ISO 27001 to specify 2022 version. Added OAuth 2.1 mandatory requirements to Area 1 (PKCE for all clients, exact URI match, implicit/password grant removal). Added WebAuthn/passkey conditional block to Area 1. Added SAST blind-spot caveat to Area 5 (tools miss ~50% of vulns; clean SAST ≠ secure code). Added platform-specific Rails block to Area 3 (mass assignment, html_safe/raw, ActiveRecord string interpolation, send/constantize RCE, eval, Brakeman). Added Node.js/Express block to Area 3 (exec injection, eval/new Function, require() path traversal, template injection, helmet middleware, unhandled promise rejections). Added CWE-862 (Missing Authorization, CWE Top 25 2025 #5) to Area 11. Added API6:2023 (unrestricted business flow access) to Area 11. Added Mobile Top 10 2024 M2 (supply chain) and M6 (privacy) to Android block in Area 9. Added deployed-state check to Threat Model section. Fixed Output Structure section numbering (1→7). Added Audit Target checklist item to Completeness Check. |
 | 1.6     | 2026-05-28 | Applied Copilot review findings: fixed malformed invocation table row (moved trailing note out of table); added filename sanitisation rule for project/branch components; added optional `Scope` field to finding format for PR extended-scope labelling; added re-audit modifier detection heuristic; added ASVS v5.0.0 alignment note to Frameworks Referenced. Coverage gaps: Area 3 — HTTP request smuggling (CWE-444), DOM-based XSS (CWE-79), prototype pollution (CWE-1321 for JS/Node.js), ReDoS (CWE-1333); Area 2 — CWE-312/CWE-319, data masking/tokenisation; Area 6 — TLS version enforcement, CWE-295, WebSocket origin validation, mTLS; Area 7 — log injection (CWE-117); Area 9 — web cache poisoning; Area 10 — timing attacks (CWE-208), KDF recommendations, nonce/IV reuse (CWE-330/GCM), padding oracle; Area 11 — GraphQL security (conditional); Area 12 — GITHUB_TOKEN over-permission, pull_request_target fork PR exposure, environment vs. repo secrets. Enhancements: chained findings guidance added to Severity Definitions; Mode B large-PR prioritisation rule (>20 files); Done When placeholder validation step; updated description frontmatter. |
 | 1.5     | 2026-05-26 | Updated to OWASP Top 10 2025 (replaced all 2021 references); fixed SSRF OWASP citation (A10:2021 retired — no standalone 2025 category, note added); added CSRF (CWE-352, A01:2025) to Area 1; added A10:2025 Mishandling of Exceptional Conditions with CWE-636 Failing Open and CWE-209 to Area 8; added Path Traversal (CWE-22), Insecure Deserialization (CWE-502, A08:2025), Open Redirect (CWE-601), and conditional memory safety block (CWE-787/CWE-125/CWE-416/CWE-190 for memory-unsafe languages) to Area 3; extended JWT token lifecycle bullet (alg:none, RS256/HS256 key-confusion, jku/kid injection) in Area 1; specified CVSS:3.1 vector format with v4.0 note in Finding Format; updated CWE Top 25 → CWE Top 25 2025 in Frameworks Referenced; added CWE-639 to IDOR bullet in Area 11; enumerated HTTP security headers explicitly in Area 9; added supply chain elevation note (A03:2025 is #3) to Area 5; updated OWASP LLM Top 10 to v2.0 (2025) in Area 12 and Frameworks Referenced. |
