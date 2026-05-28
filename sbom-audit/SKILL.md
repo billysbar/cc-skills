@@ -347,10 +347,21 @@ osv-scanner --format json . 2>&1
 Parses all lockfiles present. Records results by ecosystem. If not installed: Low gap finding; `brew install osv-scanner`.
 
 ### 3.2 grype (SBOM-based, if SBOM generated)
+
+Run Grype twice to produce two distinct result sets:
+
 ```bash
-grype sbom:sbom-audit-bom.json --output json 2>&1
+# Run 1: CI-gate scan — only CVEs with an available fix (mirrors ci.yml only-fixed: true)
+grype sbom:sbom-audit-bom.json --output json --only-fixed 2>&1 > /tmp/grype-ci.json
+
+# Run 2: full scan — all CVEs including those with no fix available
+grype sbom:sbom-audit-bom.json --output json 2>&1 > /tmp/grype-full.json
 ```
-Cross-reference with NVD, GHSA, and OSV. If not installed: Low gap finding; `brew install grype`.
+
+Cross-reference with NVD, GHSA, and OSV. Report both result sets separately in Section 4 and
+Section 5: CI-gate findings (what would block a PR in production) vs. additional findings
+(informational — no fix available, CI would not block on these). If not installed: Low gap
+finding; `brew install grype`.
 
 ### 3.3 trivy (if available and not already used as SBOM generator)
 ```bash
@@ -408,6 +419,33 @@ If VEX documents were found in Phase 2.5:
 - Mark as `[VEX: not-affected]` or `[VEX: mitigated]` — exclude from severity counts
 - Still list VEX-suppressed CVEs in the findings table for transparency with a `[VEX suppressed]` tag
 - Add VEX Status row to Section 4 (SBOM Summary): `N CVEs suppressed by VEX / M total CVEs found`
+
+### 3.7 Grype Suppression File Audit
+
+```bash
+if [ -f .grype.yaml ]; then
+  echo ".grype.yaml found — $(grep -c 'vulnerability:' .grype.yaml) suppression entries"
+  cat .grype.yaml
+else
+  echo ".grype.yaml not present — no Grype suppressions configured"
+fi
+```
+
+If `.grype.yaml` is present, Grype applies its `ignore` rules automatically during any scan in
+Phase 3.2. Suppressed findings are silently excluded from scan output and will not appear in
+Phase 3.5 deduplication — they are invisible unless explicitly audited here.
+
+For each `ignore` entry found:
+- Report as a finding in Section 5 with tag `[Grype-Suppressed]`
+- Severity: as reported by the CVE database for that vulnerability ID
+- State the suppression rationale if a comment is present above the entry in the file
+- Flag entries with no rationale comment as **Low** (undocumented risk acceptance)
+- Record the total suppression count in the SBOM Summary table (Section 4)
+
+Suppression entries are version-pinned — a suppression for `form-data@2.3.3` does not apply
+to `form-data@2.5.4`. Cross-reference each pinned version against `package-lock.json` to
+confirm the suppressed package is still at the pinned version (i.e. the suppression is active
+and not silently stale).
 
 ---
 
@@ -578,6 +616,12 @@ For each CI config found, check — adapting expected commands to detected ecosy
 - **Install command**: `npm ci` PASS vs `npm install` WARN; `bundle install --frozen` PASS vs `bundle install` WARN; `pip sync` PASS vs `pip install -r` WARN; `go mod download` with verification PASS
 - **SCA tool invocation**: `npm audit`, `bundler-audit`, `osv-scanner`, `grype`, `trivy` in any step → PASS; absent → Low gap
 - **Multi-OS/arch matrix**: flag if Linux-only for a project with native binaries
+- **Security result upload**: check that steps uploading SCA/SBOM scan results use
+  `if: always()`. Without this, a failing scan step prevents upload of the results — the
+  exact moment they are needed. Flag absent as **Low** gap.
+- **SBOM artifact retention**: check that the generated SBOM is uploaded as a CI artifact
+  with explicit retention days. A SBOM generated but not archived provides no audit trail.
+  Flag absent as **Low** gap.
 
 ### 5.2 GitHub Actions Version Pinning
 
@@ -650,6 +694,9 @@ cat renovate.json 2>/dev/null || cat .renovaterc 2>/dev/null || cat .renovaterc.
 For each file found, check that all detected ecosystems are covered in the config.
 Flag as **Low** gap if no automated dependency update tool is configured.
 Flag as **Moderate** if tool is configured but misses one or more detected ecosystems.
+For GitHub repositories, also check that the `github-actions` ecosystem block is present —
+required to keep SHA-pinned CI actions updated automatically. Without it, action SHA pins
+drift to stale versions and require manual updates. Flag absent as **Low** gap.
 
 ---
 
@@ -732,6 +779,9 @@ Follow with a one-paragraph narrative of the two or three highest-risk attack pa
 | Missing elements | list or "none" |
 | VEX status | N CVEs suppressed / M total CVEs found |
 | Provenance coverage | N/M direct deps with signed provenance |
+| Grype findings — CI gate (only-fixed) | N critical / N high / N total |
+| Grype findings — full (all CVEs) | N critical / N high / N total |
+| Grype suppressions (.grype.yaml) | N entries — see Section 5 [Grype-Suppressed] findings |
 
 If multiple ecosystems detected, add per-ecosystem rows for component counts.
 
@@ -863,6 +913,10 @@ Before finalising, verify:
 - [ ] Section 6 (PR Checklist) has all 7 rows answered (or N/A if no diff scope)
 - [ ] Remediation Plan covers all Critical/High findings with retest guidance
 - [ ] No source files were edited, created, or deleted
+- [ ] Phase 3.2 run twice — CI-gate and full results both reported in Section 4 and Section 5
+- [ ] Phase 3.7 run — .grype.yaml entries listed in Section 5 as [Grype-Suppressed] (or noted as absent)
+- [ ] Section 4 Grype finding counts populated for both CI-gate and full scans
+- [ ] Section 4 Grype suppression count populated (or "0 — no .grype.yaml present")
 
 ## Done When
 
